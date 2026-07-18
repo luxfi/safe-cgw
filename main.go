@@ -64,6 +64,14 @@ var (
 	chainIndex = map[string]map[string]any{}
 	rpcByChain = map[string]string{}
 	httpClient = &http.Client{Timeout: 15 * time.Second}
+
+	// SafeL2 1.5.0 singletons per chain (org-safes deployments). Advertised via
+	// /about/master-copies so the app marks a Safe's implementation as official.
+	singletonByChain = map[string]string{
+		"96369":  "0xED96250C6cDca3B5e5F8F066Fc3e200Ebe08BA87",
+		"200200": "0xF034942c1140125b5c278aE9cEE1B488e915B2FE",
+		"494949": "0xc65ea8882020af7cda7854d590c6fcd34bf364ec",
+	}
 )
 
 func main() {
@@ -85,16 +93,28 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok")) })
-	mux.HandleFunc("GET /", handleRoot)
+	// {$} anchors the root so it does NOT act as a catch-all prefix — otherwise
+	// every unmatched path returns the banner JSON and the app parses it as the
+	// wrong type (e.g. a missing lastSync -> "Invalid time value" crash).
+	mux.HandleFunc("GET /{$}", handleRoot)
 
 	mux.HandleFunc("GET /v1/chains", handleChains)
 	mux.HandleFunc("GET /v2/chains", handleChains)
 	mux.HandleFunc("GET /v1/chains/{chainId}", handleChain)
 	mux.HandleFunc("GET /v2/chains/{chainId}", handleChain)
+	mux.HandleFunc("GET /v1/chains/{chainId}/about", handleAbout)
+	mux.HandleFunc("GET /v1/chains/{chainId}/about/indexing", handleIndexing)
+	mux.HandleFunc("GET /v1/chains/{chainId}/about/master-copies", handleMasterCopies)
+	mux.HandleFunc("GET /v1/chains/{chainId}/safe-apps", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, []any{}) })
 
 	mux.HandleFunc("GET /v1/chains/{chainId}/safes/{address}", handleSafe)
 	mux.HandleFunc("GET /v1/chains/{chainId}/safes/{address}/nonces", handleNonces)
 	mux.HandleFunc("GET /v1/chains/{chainId}/safes/{address}/balances/{fiat}", handleBalances)
+
+	// Owned-safes lookups need an indexer; return empty so the sidebar renders.
+	mux.HandleFunc("GET /v1/chains/{chainId}/owners/{ownerAddress}/safes", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, map[string]any{"safes": []any{}}) })
+	mux.HandleFunc("GET /v1/safes", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, []any{}) })
+	mux.HandleFunc("GET /v2/safes", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, []any{}) })
 
 	// Off-chain collections — empty until the Transaction Service is deployed.
 	empty := func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, emptyPage()) }
@@ -104,6 +124,11 @@ func main() {
 	mux.HandleFunc("GET /v1/chains/{chainId}/safes/{address}/transactions/queued", empty)
 	mux.HandleFunc("GET /v1/chains/{chainId}/safes/{address}/messages", empty)
 	mux.HandleFunc("GET /v1/chains/{chainId}/safes/{address}/incoming-transfers", empty)
+
+	// Clean 404 for any other read the app probes (security, positions, gas-price,
+	// relay, delegates, …). RTK Query treats 404 as "no data" and renders empty
+	// states — never the banner, which would poison typed parsers.
+	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) { writeErr(w, 404, "not found") })
 
 	addr := ":" + envOr("PORT", "3000")
 	log.Printf("safe-cgw listening on %s for chains %v", addr, keys(rpcByChain))
@@ -132,6 +157,60 @@ func handleChain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, c)
+}
+
+func handleAbout(w http.ResponseWriter, r *http.Request) {
+	if _, ok := chainIndex[r.PathValue("chainId")]; !ok {
+		writeErr(w, 404, "chain not found")
+		return
+	}
+	writeJSON(w, 200, map[string]any{
+		"transactionServiceBaseUri": envOr("PUBLIC_URL", "https://safe-cgw.lux.network"),
+		"name":                      "lux-safe-cgw",
+		"version":                   "1.0.0",
+		"buildNumber":               "1",
+	})
+}
+
+// handleIndexing reports the chain as synced (this gateway reads live from RPC,
+// so there is no index lag). The app's status widget reads only synced+lastSync.
+func handleIndexing(w http.ResponseWriter, r *http.Request) {
+	chainID := r.PathValue("chainId")
+	rpc := rpcByChain[chainID]
+	if rpc == "" {
+		writeErr(w, 404, "chain not supported")
+		return
+	}
+	var block int64
+	if bn, err := rpcCall(rpc, "eth_blockNumber", []any{}); err == nil {
+		block = decodeUint(bn).Int64()
+	}
+	nowISO := time.Now().UTC().Format(time.RFC3339)
+	writeJSON(w, 200, map[string]any{
+		"currentBlockNumber":         block,
+		"currentBlockTimestamp":      nowISO,
+		"erc20BlockNumber":           block,
+		"erc20BlockTimestamp":        nowISO,
+		"erc20Synced":                true,
+		"masterCopiesBlockNumber":    block,
+		"masterCopiesBlockTimestamp": nowISO,
+		"masterCopiesSynced":         true,
+		"synced":                     true,
+		"lastSync":                   time.Now().UnixMilli(),
+	})
+}
+
+func handleMasterCopies(w http.ResponseWriter, r *http.Request) {
+	chainID := r.PathValue("chainId")
+	if _, ok := chainIndex[chainID]; !ok {
+		writeErr(w, 404, "chain not found")
+		return
+	}
+	out := []any{}
+	if s := singletonByChain[chainID]; s != "" {
+		out = append(out, map[string]any{"address": s, "version": "1.5.0"})
+	}
+	writeJSON(w, 200, out)
 }
 
 // handleSafe synthesizes SafeInfo from on-chain reads (no Transaction Service).
