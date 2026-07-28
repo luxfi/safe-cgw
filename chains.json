@@ -82,5 +82,33 @@
     "safeAppsRpcUri": { "authentication": "NO_AUTHENTICATION", "value": "https://api.pars.network/v1/bc/C/rpc" },
     "theme": { "backgroundColor": "#0F1B2D", "textColor": "#FFFFFF" },
     "recommendedMasterCopyVersion": "1.5.0"
+  },
+  {
+    "chainId": "36963",
+    "chainName": "Hanzo",
+    "shortName": "hanzo",
+    "description": "Hanzo Network C-Chain",
+    "chainLogoUri": "https://cdn.hanzo.ai/brand/hanzo-logo.svg",
+    "l2": true,
+    "isTestnet": false,
+    "zk": false,
+    "nativeCurrency": { "name": "Hanzo", "symbol": "HANZO", "decimals": 18, "logoUri": "https://cdn.hanzo.ai/brand/hanzo-logo.svg" },
+    "transactionService": "https://safe-cgw.lux.network",
+    "blockExplorerUriTemplate": {
+      "address": "https://explore.hanzo.network/address/{{address}}",
+      "txHash": "https://explore.hanzo.network/tx/{{txHash}}",
+      "api": "https://explore.hanzo.network/api?module={{module}}&action={{action}}&address={{address}}&apiKey={{apiKey}}"
+    },
+    "beaconChainExplorerUriTemplate": {},
+    "disabledWallets": [],
+    "ensRegistryAddress": null,
+    "balancesProvider": { "chainName": null, "enabled": false },
+    "features": ["EIP1559", "SAFE_TX_GAS_OPTIONAL", "CONTRACT_INTERACTION", "SPENDING_LIMIT", "MULTI_SEND", "SAFE_APPS"],
+    "gasPrice": [{ "type": "fixed1559", "maxFeePerGas": "30000000000", "maxPriorityFeePerGas": "1000000000" }],
+    "publicRpcUri": { "authentication": "NO_AUTHENTICATION", "value": "https://api.hanzo.network/v1/bc/C/rpc" },
+    "rpcUri": { "authentication": "NO_AUTHENTICATION", "value": "https://api.hanzo.network/v1/bc/C/rpc" },
+    "safeAppsRpcUri": { "authentication": "NO_AUTHENTICATION", "value": "https://api.hanzo.network/v1/bc/C/rpc" },
+    "theme": { "backgroundColor": "#0F1B2D", "textColor": "#FFFFFF" },
+    "recommendedMasterCopyVersion": "1.5.0"
   }
 ]
