@@ -1,17 +1,21 @@
 name: Docker
 
-# Builds ghcr.io/luxfi/safe-cgw on the lux-build ARC pool in lux-k8s.
+# Builds ghcr.io/luxfi/safe-cgw on the forge's runner pool.
 #
-# This lives in .github/workflows, not .hanzo/workflows: the forge at
-# git.hanzo.ai does not host luxfi/safe-cgw, so a workflow filed there has no
-# scheduler and every tag since v0.1.2 built nowhere. luxfi/safe-wallet proves
-# the GitHub + lux-build path works (lux-v2.2.6, 11m16s).
+# The forge (git.hanzo.ai) is where this repo builds: its runners carry the
+# lux-build label and the luxfi org there holds GHCR_USER/GHCR_TOKEN. GitHub is
+# a mirror with zero registered runners, so a run scheduled there queues
+# forever — Actions is disabled on the GitHub side for exactly that reason.
+#
+# This file lives in .github/workflows because that is what the forge reads.
+# It was previously moved to .hanzo/workflows, which nothing reads, and every
+# tag from v0.1.2 onward built nowhere.
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'existing version tag to (re)build, e.g. v0.1.3'
+        description: 'existing version tag to (re)build, e.g. v0.1.4'
         required: false
         default: ''
   push:
@@ -20,11 +24,10 @@ on:
 permissions:
   contents: read
   packages: write
-  id-token: write
 
 jobs:
   build:
-    runs-on: lux-build
+    runs-on: lux-build-linux-amd64
     steps:
       - uses: actions/checkout@v4
         with:
@@ -43,13 +46,11 @@ jobs:
             network=host
 
       - name: Login to GHCR
-        # The ghcr.io/luxfi/safe-cgw package is linked to no repository, so the
-        # repo-scoped GITHUB_TOKEN cannot write it — org-admin GHCR_PAT does.
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: zeekay
-          password: ${{ secrets.GHCR_PAT }}
+          username: ${{ secrets.GHCR_USER }}
+          password: ${{ secrets.GHCR_TOKEN }}
 
       - name: Image metadata
         id: meta
