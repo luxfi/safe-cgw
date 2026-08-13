@@ -1,0 +1,15 @@
+# Platform-native CI/CD — the ONE build path for this repo.
+#
+# A v* git tag push → the platform GitHub App webhook → platform BuildKit
+# builds ghcr.io/luxfi/safe-cgw in-cluster. NO GitHub Actions, NO ARC runners:
+# the luxfi GitHub org has zero registered runners, so a workflow here has no
+# scheduler and every tag since v0.1.2 built nowhere.
+#
+# Schema: hanzoai/platform docs/PLATFORM_CI.md
+build:
+  matrix:
+    - { os: linux, arch: amd64 }
+  dockerfile: ./Dockerfile
+  context: .
+  image: ghcr.io/luxfi/safe-cgw
+  tag-pattern: "{{git.tag}}"
