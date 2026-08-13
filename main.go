@@ -27,11 +27,13 @@ package main
 import (
 	"bytes"
 	_ "embed"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
 	"math/big"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -39,6 +41,21 @@ import (
 
 //go:embed chains.json
 var chainsJSON []byte
+
+// registry.json declares, per chain, the Safes and NFT collections this
+// deployment knows about. It is a proposal, never an assertion: every entry is
+// confirmed against the chain before it reaches a response (a Safe must return
+// the caller among its getOwners(); a collection must return a balance). So a
+// stale or wrong entry yields nothing rather than a lie.
+//
+//go:embed registry.json
+var registryJSON []byte
+
+// registry is the shape of one chain's entry in registry.json.
+type registry struct {
+	Safes       []string `json:"safes"`
+	Collections []string `json:"collections"`
+}
 
 // Well-known Safe storage slots (keccak256 of the manager namespace strings).
 const (
@@ -49,21 +66,28 @@ const (
 
 // Safe method selectors.
 const (
-	selGetOwners      = "0xa0e67e2b"
-	selGetThreshold   = "0xe75235b8"
-	selNonce          = "0xaffed0e0"
-	selVersion        = "0xffa1ad74"
-	selModulesPaged   = "0xcc2f8452" // getModulesPaginated(address,uint256)
-	zeroAddr          = "0x0000000000000000000000000000000000000000"
-	modulesPageArgs   = "0000000000000000000000000000000000000000000000000000000000000001" + // start = SENTINEL (0x1)
+	selGetOwners     = "0xa0e67e2b"
+	selGetThreshold  = "0xe75235b8"
+	selNonce         = "0xaffed0e0"
+	selVersion       = "0xffa1ad74"
+	selModulesPaged  = "0xcc2f8452" // getModulesPaginated(address,uint256)
+	selBalanceOf     = "0x70a08231" // balanceOf(address)
+	selTokenOfOwner  = "0x2f745c59" // tokenOfOwnerByIndex(address,uint256)
+	selTokenURI      = "0xc87b56dd" // tokenURI(uint256)
+	selName          = "0x06fdde03" // name()
+	selSymbol        = "0x95d89b41" // symbol()
+	maxTokensPerColl = 200          // cap the per-collection enumeration walk
+	zeroAddr         = "0x0000000000000000000000000000000000000000"
+	modulesPageArgs  = "0000000000000000000000000000000000000000000000000000000000000001" + // start = SENTINEL (0x1)
 		"0000000000000000000000000000000000000000000000000000000000000064" // pageSize = 100
 )
 
 var (
-	chainList  []map[string]any
-	chainIndex = map[string]map[string]any{}
-	rpcByChain = map[string]string{}
-	httpClient = &http.Client{Timeout: 15 * time.Second}
+	chainList     []map[string]any
+	chainIndex    = map[string]map[string]any{}
+	rpcByChain    = map[string]string{}
+	registryIndex = map[string]registry{}
+	httpClient    = &http.Client{Timeout: 15 * time.Second}
 
 	// SafeL2 1.5.0 singletons per chain (org-safes deployments). Advertised via
 	// /about/master-copies so the app marks a Safe's implementation as official.
@@ -77,6 +101,9 @@ var (
 func main() {
 	if err := json.Unmarshal(chainsJSON, &chainList); err != nil {
 		log.Fatalf("parse chains.json: %v", err)
+	}
+	if err := json.Unmarshal(registryJSON, &registryIndex); err != nil {
+		log.Fatalf("parse registry.json: %v", err)
 	}
 	for _, c := range chainList {
 		id, _ := c["chainId"].(string)
@@ -111,15 +138,16 @@ func main() {
 	mux.HandleFunc("GET /v1/chains/{chainId}/safes/{address}/nonces", handleNonces)
 	mux.HandleFunc("GET /v1/chains/{chainId}/safes/{address}/balances/{fiat}", handleBalances)
 
-	// Owned-safes lookups need an indexer; return empty so the sidebar renders.
-	mux.HandleFunc("GET /v1/chains/{chainId}/owners/{ownerAddress}/safes", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, map[string]any{"safes": []any{}}) })
+	mux.HandleFunc("GET /v1/chains/{chainId}/owners/{ownerAddress}/safes", handleOwnerSafes)
+	mux.HandleFunc("GET /v1/owners/{ownerAddress}/safes", handleAllOwnerSafes)
 	mux.HandleFunc("GET /v1/safes", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, []any{}) })
 	mux.HandleFunc("GET /v2/safes", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, []any{}) })
 
+	mux.HandleFunc("GET /v1/chains/{chainId}/safes/{address}/collectibles", handleCollectibles)
+	mux.HandleFunc("GET /v2/chains/{chainId}/safes/{address}/collectibles", handleCollectibles)
+
 	// Off-chain collections — empty until the Transaction Service is deployed.
 	empty := func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, emptyPage()) }
-	mux.HandleFunc("GET /v1/chains/{chainId}/safes/{address}/collectibles", empty)
-	mux.HandleFunc("GET /v2/chains/{chainId}/safes/{address}/collectibles", empty)
 	mux.HandleFunc("GET /v1/chains/{chainId}/safes/{address}/transactions/history", empty)
 	mux.HandleFunc("GET /v1/chains/{chainId}/safes/{address}/transactions/queued", empty)
 	mux.HandleFunc("GET /v1/chains/{chainId}/safes/{address}/messages", empty)
@@ -269,6 +297,174 @@ func handleSafe(w http.ResponseWriter, r *http.Request) {
 		"messagesTag":                tag,
 	}
 	writeJSON(w, 200, out)
+}
+
+// ownedSafes returns the declared Safes on a chain that `owner` actually owns,
+// confirmed by getOwners() on each. The registry narrows the search; the chain
+// decides the answer.
+func ownedSafes(chainID, owner string) []string {
+	rpc := rpcByChain[chainID]
+	out := []string{}
+	if rpc == "" || owner == "" {
+		return out
+	}
+	for _, safe := range registryIndex[chainID].Safes {
+		ownersHex, err := ethCall(rpc, safe, selGetOwners)
+		if err != nil {
+			continue
+		}
+		for _, o := range decodeAddressArray(ownersHex, 0) {
+			if strings.EqualFold(o, owner) {
+				out = append(out, safe)
+				break
+			}
+		}
+	}
+	return out
+}
+
+func handleOwnerSafes(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, 200, map[string]any{"safes": ownedSafes(r.PathValue("chainId"), r.PathValue("ownerAddress"))})
+}
+
+// handleAllOwnerSafes answers the cross-chain sidebar query: chainId -> Safes.
+func handleAllOwnerSafes(w http.ResponseWriter, r *http.Request) {
+	owner := r.PathValue("ownerAddress")
+	out := map[string][]string{}
+	for chainID := range rpcByChain {
+		if safes := ownedSafes(chainID, owner); len(safes) > 0 {
+			out[chainID] = safes
+		}
+	}
+	writeJSON(w, 200, out)
+}
+
+// handleCollectibles enumerates ERC-721 holdings for the declared collections
+// on a chain. Uses the ERC721Enumerable walk (balanceOf +
+// tokenOfOwnerByIndex), which is what the DEX position manager implements, so
+// LP positions render as the NFTs they are. A collection that does not
+// implement it simply contributes nothing.
+func handleCollectibles(w http.ResponseWriter, r *http.Request) {
+	chainID := r.PathValue("chainId")
+	safe := r.PathValue("address")
+	rpc := rpcByChain[chainID]
+	results := []any{}
+
+	for _, coll := range registryIndex[chainID].Collections {
+		if rpc == "" {
+			break
+		}
+		balHex, err := ethCall(rpc, coll, selBalanceOf+padAddress(safe))
+		if err != nil || !hasValue(balHex) {
+			continue
+		}
+		n := int(decodeUint(balHex).Int64())
+		if n > maxTokensPerColl {
+			n = maxTokensPerColl
+		}
+		name := decodeString(mustCall(rpc, coll, selName))
+		symbol := decodeString(mustCall(rpc, coll, selSymbol))
+
+		for i := 0; i < n; i++ {
+			idHex, err := ethCall(rpc, coll, selTokenOfOwner+padAddress(safe)+padUint(i))
+			if err != nil || !hasValue(idHex) {
+				continue
+			}
+			id := decodeUint(idHex).String()
+			uri := decodeString(mustCall(rpc, coll, selTokenURI+padUint256(decodeUint(idHex))))
+			meta := tokenMetadata(uri)
+
+			// On-chain metadata names the position ("LZOO/LUX, 0.3%"); the
+			// contract name is the fallback when a token has none.
+			display := strOr(meta["name"], name+" #"+id)
+			results = append(results, map[string]any{
+				"address":     coll,
+				"tokenName":   name,
+				"tokenSymbol": symbol,
+				"logoUri":     strOrNil(meta["image"]),
+				"id":          id,
+				"uri":         uri,
+				"name":        display,
+				"description": strOrNil(meta["description"]),
+				"imageUri":    strOrNil(meta["image"]),
+				"metadata":    meta,
+			})
+		}
+	}
+	writeJSON(w, 200, map[string]any{"count": len(results), "next": nil, "previous": nil, "results": results})
+}
+
+// tokenMetadata unwraps an ERC-721 tokenURI that carries its JSON inline as a
+// data: URI — how on-chain-rendered NFTs (the DEX position manager among them)
+// publish a position's name, description and SVG. An http(s) URI is left for
+// the client to fetch; anything unparseable yields an empty map, never an
+// error, since metadata is decoration and its absence must not drop the token.
+func tokenMetadata(uri string) map[string]any {
+	const prefix = "data:application/json"
+	if !strings.HasPrefix(uri, prefix) {
+		return map[string]any{}
+	}
+	body := uri[len(prefix):]
+	switch {
+	case strings.HasPrefix(body, ";base64,"):
+		raw, err := base64.StdEncoding.DecodeString(body[len(";base64,"):])
+		if err != nil {
+			return map[string]any{}
+		}
+		body = string(raw)
+	case strings.HasPrefix(body, ","):
+		unescaped, err := url.PathUnescape(body[1:])
+		if err != nil {
+			return map[string]any{}
+		}
+		body = unescaped
+	default:
+		return map[string]any{}
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(body), &out); err != nil {
+		return map[string]any{}
+	}
+	return out
+}
+
+// strOr reads a string field from decoded metadata, falling back when absent.
+func strOr(v any, fallback string) string {
+	if s, ok := v.(string); ok && s != "" {
+		return s
+	}
+	return fallback
+}
+
+// strOrNil is strOr for fields the API models as nullable.
+func strOrNil(v any) any {
+	if s, ok := v.(string); ok && s != "" {
+		return s
+	}
+	return nil
+}
+
+// mustCall is ethCall for reads whose absence is not an error (optional
+// metadata): a revert yields "" and the caller decodes an empty string.
+func mustCall(rpc, to, data string) string {
+	out, err := ethCall(rpc, to, data)
+	if err != nil {
+		return ""
+	}
+	return out
+}
+
+// padAddress renders an address as a left-padded ABI word.
+func padAddress(a string) string {
+	a = strings.TrimPrefix(strings.ToLower(a), "0x")
+	return strings.Repeat("0", 64-len(a)) + a
+}
+
+func padUint(n int) string { return padUint256(big.NewInt(int64(n))) }
+
+func padUint256(n *big.Int) string {
+	h := n.Text(16)
+	return strings.Repeat("0", 64-len(h)) + h
 }
 
 func handleNonces(w http.ResponseWriter, r *http.Request) {
