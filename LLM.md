@@ -10,13 +10,39 @@ chain config or any Safe. This service serves the read surface the app needs.
 
 | chainId | name | RPC |
 |---------|------|-----|
-| 96369  | Lux  | https://api.lux.network/v1/bc/C/rpc |
-| 200200 | Zoo  | https://api.zoo.network/v1/bc/C/rpc |
-| 494949 | Pars | https://api.pars.network/v1/bc/C/rpc |
+| 96369  | Lux   | https://api.lux.network/v1/bc/C/rpc   |
+| 200200 | Zoo   | https://api.zoo.network/v1/bc/C/rpc  |
+| 494949 | Pars  | https://api.pars.network/v1/bc/C/rpc |
+| 36963  | Hanzo | https://api.hanzo.network/v1/bc/C/rpc |
 
-Chain configs (SafeL2 1.5.0 singleton/factory/handler/multisend, explorer,
-native symbol) are in `chains.json`, sourced from
-`~/work/lux/standard/deployments/org-safes/*.json`.
+Every chain answers `/v1/bc/C/rpc`; there is no `/ext/` path on any of them.
+
+Chain and native-token icons resolve to `safe.lux.network/brand/<org>/mark.svg`.
+The brand repo owns the pixels and the app already serves every brand's mark, so
+the icon improves with the app and the gateway holds no artwork. The three
+`cdn.*.network` hosts the config used to name serve nothing: `cdn.lux.network`
+404s, `cdn.zoo.network` does not resolve, `cdn.pars.network` 522s.
+
+## Features
+
+`features` in `chains.json` is the app's capability list. A name the app does
+not know is silently ignored, so the list carries only names the app reads:
+
+| feature | why |
+|---------|-----|
+| `MY_ACCOUNTS` | the account list. Without it `/welcome/accounts` renders chrome and no `<main>` — a blank landing page. |
+| `ERC721`, `DEFAULT_TOKENLIST`, `SAFE_APPS`, `SPENDING_LIMIT`, `EIP1559`, `SAFE_TX_GAS_OPTIONAL` | read surfaces the gateway already serves |
+| `CONTRACT_INTERACTION` | gateway-side transaction classification |
+
+Deliberately absent:
+
+- `MULTI_SEND` — no MultiSend or MultiSendCallOnly is deployed on any of these
+  chains. `eth_getCode` on the 1.5.0 / 1.4.1 / 1.3.0 canonical addresses returns
+  `0x`. Claiming the capability makes the app throw on every page.
+- `NATIVE_WALLETCONNECT` — WalletConnect needs a project id. Until one is issued
+  and read from KMS, the SDK initialises empty and every session request 400s.
+- `OIDC_AUTH` — identity sign-in follows the brand's Hanzo IAM, which every host
+  resolves, so the app offers it unconditionally rather than per chain.
 
 ## Endpoints
 
@@ -45,6 +71,7 @@ It never sends transactions and never mutates any Safe.
 ## Build / deploy
 
 - Image: `ghcr.io/luxfi/safe-cgw` — built by `.github/workflows/docker.yml` on
-  the `lux-build` ARC pool (multi-arch, `latest=false`, semver tags).
-- Deploy: `luxfi/universe` → `k8s/lux-k8s/safe-cgw/` → `safe-cgw.lux.network`.
+  the forge (`git.hanzo.ai`), runner label `lux-build-linux-amd64` (multi-arch,
+  `latest=false`, semver tags). The GitHub mirror has no runners.
+- Deploy: `lux/universe` → `deploy/hanzo/lux-safe-cgw.yaml` → `safe-cgw.lux.network`.
 - Pure Go standard library. `GOWORK=off go build .` to compile locally.
