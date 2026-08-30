@@ -10,12 +10,12 @@ chain config or any Safe. This service serves the read surface the app needs.
 
 | chainId | name | RPC |
 |---------|------|-----|
-| 96369  | Lux   | https://api.lux.network/v1/bc/C/rpc   |
-| 200200 | Zoo   | https://api.zoo.network/v1/bc/C/rpc  |
-| 494949 | Pars  | https://api.pars.network/v1/bc/C/rpc |
-| 36963  | Hanzo | https://api.hanzo.network/v1/bc/C/rpc |
+| 96369  | Lux   | https://api.lux.network/v1/chain/C/rpc   |
+| 200200 | Zoo   | https://api.zoo.network/v1/chain/C/rpc  |
+| 494949 | Pars  | https://api.pars.network/v1/chain/C/rpc |
+| 36963  | Hanzo | https://api.hanzo.network/v1/chain/C/rpc |
 
-Every chain answers `/v1/bc/C/rpc`; there is no `/ext/` path on any of them.
+Every chain answers `/v1/chain/C/rpc`; there is no `/ext/` path on any of them.
 
 Chain and native-token icons resolve to `safe.lux.network/brand/<org>/mark.svg`.
 The brand repo owns the pixels and the app already serves every brand's mark, so
