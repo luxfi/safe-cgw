@@ -358,14 +358,11 @@ func handleCollectibles(w http.ResponseWriter, r *http.Request) {
 		if err != nil || !hasValue(balHex) {
 			continue
 		}
-		n := int(decodeUint(balHex).Int64())
-		if n > maxTokensPerColl {
-			n = maxTokensPerColl
-		}
+		n := min(int(decodeUint(balHex).Int64()), maxTokensPerColl)
 		name := decodeString(mustCall(rpc, coll, selName))
 		symbol := decodeString(mustCall(rpc, coll, selSymbol))
 
-		for i := 0; i < n; i++ {
+		for i := range n {
 			idHex, err := ethCall(rpc, coll, selTokenOfOwner+padAddress(safe)+padUint(i))
 			if err != nil || !hasValue(idHex) {
 				continue
@@ -558,7 +555,7 @@ func hexToBytes(s string) []byte {
 		s = "0" + s
 	}
 	b := make([]byte, len(s)/2)
-	for i := 0; i < len(b); i++ {
+	for i := range b {
 		b[i] = hexNibble(s[2*i])<<4 | hexNibble(s[2*i+1])
 	}
 	return b
@@ -608,7 +605,7 @@ func decodeAddressArray(hex string, headWord int) []string {
 	}
 	n := int(new(big.Int).SetBytes(b[off : off+32]).Int64())
 	out := make([]string, 0, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		s := off + 32 + i*32
 		if s+32 > len(b) {
 			break

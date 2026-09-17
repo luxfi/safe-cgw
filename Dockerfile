@@ -1,7 +1,7 @@
 # Multi-arch build: cross-compile a static binary on the native BUILDPLATFORM
 # (no QEMU emulation of the compiler), then ship it on a minimal Alpine base
 # that carries CA certificates for the outbound HTTPS JSON-RPC calls.
-FROM --platform=$BUILDPLATFORM golang:1.22-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.27.1-alpine AS build
 ARG TARGETOS
 ARG TARGETARCH
 WORKDIR /src
